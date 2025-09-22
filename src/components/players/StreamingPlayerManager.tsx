@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import VideoJSStreamingPlayer from './VideoJSStreamingPlayer';
 import HLSStreamingPlayer from './HLSStreamingPlayer';
 import ClapprStreamingPlayer from './ClapprStreamingPlayer';
-import { Play, Settings, Eye, Share2, Download, Zap, Monitor, Activity, Radio, Wifi, WifiOff, AlertCircle, CheckCircle, RefreshCw } from 'lucide-react';
+import { Play, Settings, Eye, Share2, Download, Zap, Monitor, Activity, Radio, Wifi, WifiOff, AlertCircle, CheckCircle, RefreshCw, ExternalLink } from 'lucide-react';
 
 interface StreamingPlayerManagerProps {
   className?: string;
@@ -66,6 +66,8 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
     position: 'bottom-right' as 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right',
     opacity: 50
   });
+  const [lastStreamCheck, setLastStreamCheck] = useState<number>(0);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const userLogin = user?.usuario || (user?.email ? user.email.split('@')[0] : `user_${user?.id || 'usuario'}`);
 
@@ -82,6 +84,7 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
 
   const loadStreamStatus = async () => {
     try {
+      setConnectionError(null);
       const token = await getToken();
       const response = await fetch('/api/streaming/status', {
         headers: { Authorization: `Bearer ${token}` }
@@ -90,6 +93,7 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
       if (response.ok) {
         const data = await response.json();
         setStreamStatus(data);
+        setLastStreamCheck(Date.now());
         
         // Construir URL do stream baseado no status
         if (data.is_live) {
@@ -107,15 +111,47 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
             console.log('📡 Stream OBS detectado:', obsUrl);
           }
         } else {
-          // Sem transmissão ativa
+          // Sem transmissão ativa - limpar dados
           setCurrentStreamUrl('');
           setStreamTitle('');
           console.log('📴 Nenhuma transmissão ativa detectada');
+          
+          // Se não há transmissão ativa, encerrar todas as transmissões no painel
+          await cleanupInactiveTransmissions();
         }
+      } else {
+        throw new Error(`HTTP ${response.status}`);
       }
     } catch (error) {
       console.error('Erro ao verificar status de transmissão:', error);
+      setConnectionError(error instanceof Error ? error.message : 'Erro de conexão');
       setStreamStatus(null);
+      setCurrentStreamUrl('');
+      setStreamTitle('');
+    }
+  };
+
+  const cleanupInactiveTransmissions = async () => {
+    try {
+      const token = await getToken();
+      
+      // Verificar se há transmissões marcadas como ativas no banco
+      const cleanupResponse = await fetch('/api/streaming/cleanup-inactive', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        }
+      });
+      
+      if (cleanupResponse.ok) {
+        const result = await cleanupResponse.json();
+        if (result.cleaned_count > 0) {
+          console.log(`🧹 Limpeza automática: ${result.cleaned_count} transmissões inativas finalizadas`);
+        }
+      }
+    } catch (error) {
+      console.warn('Erro na limpeza automática:', error);
     }
   };
 
@@ -176,6 +212,14 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
   };
 
   const getStreamStatusInfo = () => {
+    if (connectionError) {
+      return {
+        status: 'Erro de Conexão',
+        color: 'text-red-600',
+        icon: <WifiOff className="h-4 w-4" />
+      };
+    }
+
     if (!streamStatus) {
       return {
         status: 'Verificando...',
@@ -255,6 +299,22 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
                 <div>👥 {streamStatus.transmission?.stats.viewers || streamStatus.obs_stream?.viewers || 0} espectadores</div>
                 <div>⚡ {streamStatus.transmission?.stats.bitrate || streamStatus.obs_stream?.bitrate || 0} kbps</div>
                 <div>⏱️ {streamStatus.transmission?.stats.uptime || streamStatus.obs_stream?.uptime || '00:00:00'}</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Erro de Conexão */}
+        {connectionError && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+            <div className="flex items-center">
+              <AlertCircle className="h-5 w-5 text-red-600 mr-3" />
+              <div>
+                <h3 className="font-medium text-red-800">Erro de Conexão</h3>
+                <p className="text-red-700 text-sm">{connectionError}</p>
+                <p className="text-red-600 text-xs mt-1">
+                  Última verificação: {lastStreamCheck ? new Date(lastStreamCheck).toLocaleTimeString() : 'Nunca'}
+                </p>
               </div>
             </div>
           </div>
@@ -411,11 +471,42 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
                 <span className="text-sm font-medium text-gray-600">OFFLINE</span>
               </div>
             )}
+            
+            {currentStreamUrl && (
+              <button
+                onClick={() => window.open(currentStreamUrl, '_blank')}
+                className="text-blue-600 hover:text-blue-800 flex items-center text-sm"
+              >
+                <ExternalLink className="h-4 w-4 mr-1" />
+                Abrir Stream
+              </button>
+            )}
           </div>
         </div>
 
         <div className="aspect-video bg-gray-900 rounded-lg overflow-hidden">
-          {renderPlayer()}
+          {currentStreamUrl ? (
+            renderPlayer()
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-white">
+              <div className="text-center">
+                <WifiOff className="h-16 w-16 mx-auto mb-4 text-gray-400" />
+                <h3 className="text-xl font-semibold mb-2">Nenhuma Transmissão Ativa</h3>
+                <p className="text-gray-400 mb-4">
+                  {connectionError ? 'Erro de conexão com o servidor' : 'Inicie uma transmissão para visualizar aqui'}
+                </p>
+                {connectionError && (
+                  <button
+                    onClick={loadStreamStatus}
+                    className="bg-primary-600 text-white px-4 py-2 rounded-md hover:bg-primary-700 flex items-center mx-auto"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Tentar Novamente
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Informações do Stream */}
@@ -462,7 +553,7 @@ const StreamingPlayerManager: React.FC<StreamingPlayerManagerProps> = ({
       </div>
 
       {/* Status de Conexão Detalhado */}
-      {!streamStatus?.is_live && (
+      {!streamStatus?.is_live && !connectionError && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
           <div className="flex items-start">
             <AlertCircle className="h-5 w-5 text-yellow-600 mr-3 mt-0.5" />

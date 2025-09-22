@@ -498,6 +498,14 @@ router.get('/status', authMiddleware, async (req, res) => {
     const userId = req.user.id;
     const userLogin = req.user.usuario || (req.user.email ? req.user.email.split('@')[0] : `user_${userId}`);
 
+    // Verificar se response já foi enviado
+    let responseSent = false;
+    const sendResponse = (data) => {
+      if (!responseSent) {
+        responseSent = true;
+        res.json(data);
+      }
+    };
     // Verificar transmissões de playlist ativas
     const [activeRows] = await db.execute(
       'SELECT t.*, p.nome as playlist_nome FROM transmissoes t LEFT JOIN playlists p ON t.codigo_playlist = p.id WHERE t.codigo_stm = ? AND t.status = "ativa" ORDER BY t.data_inicio DESC LIMIT 1',
@@ -511,7 +519,7 @@ router.get('/status', authMiddleware, async (req, res) => {
       const diffMs = now.getTime() - dataInicio.getTime();
       const uptime = formatDuration(Math.floor(diffMs / 1000));
 
-      res.json({
+      sendResponse({
         success: true,
         is_live: true,
         stream_type: 'playlist',
@@ -530,6 +538,7 @@ router.get('/status', authMiddleware, async (req, res) => {
           }
         }
       });
+      return;
     } else {
       // Verificar transmissões OBS (lives)
       const [obsRows] = await db.execute(
@@ -544,7 +553,7 @@ router.get('/status', authMiddleware, async (req, res) => {
         const diffMs = now.getTime() - dataInicio.getTime();
         const uptime = formatDuration(Math.floor(diffMs / 1000));
 
-        res.json({
+        sendResponse({
           success: true,
           is_live: true,
           stream_type: 'obs',
@@ -556,18 +565,25 @@ router.get('/status', authMiddleware, async (req, res) => {
             recording: false
           }
         });
+        return;
       } else {
-        res.json({
+        // Nenhuma transmissão ativa - limpar transmissões órfãs
+        await cleanupInactiveTransmissions(userId);
+        
+        sendResponse({
           success: true,
           is_live: false,
           stream_type: null,
           transmission: null
         });
+        return;
       }
     }
   } catch (error) {
     console.error('Erro ao verificar status:', error);
-    res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+    if (!responseSent) {
+      res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+    }
   }
 });
 // GET /api/streaming/wowza-debug - Debug da API Wowza (admin)
@@ -744,6 +760,14 @@ router.post('/stop', authMiddleware, async (req, res) => {
     const userId = req.user.id;
     const userLogin = req.user.usuario || (req.user.email ? req.user.email.split('@')[0] : `user_${userId}`);
 
+    // Verificar se response já foi enviado
+    let responseSent = false;
+    const sendResponse = (data) => {
+      if (!responseSent) {
+        responseSent = true;
+        res.json(data);
+      }
+    };
     if (stream_type === 'playlist' || !stream_type) {
       // Parar transmissão de playlist
       const [transmissionRows] = await db.execute(
@@ -762,7 +786,7 @@ router.post('/stop', authMiddleware, async (req, res) => {
 
         console.log(`✅ Transmissão de playlist finalizada - ID: ${transmissionId}`);
 
-        res.json({
+        sendResponse({
           success: true,
           message: 'Transmissão de playlist finalizada com sucesso'
         });
@@ -792,26 +816,27 @@ router.post('/stop', authMiddleware, async (req, res) => {
         );
 
         console.log(`✅ Transmissão OBS finalizada - ID: ${liveId}`);
-
+        sendResponse({
         res.json({
           success: true,
           message: 'Transmissão OBS finalizada com sucesso'
         });
-      } else {
-        res.json({
+        sendResponse({
+        sendResponse({
           success: true,
-          message: 'Nenhuma transmissão OBS ativa encontrada'
+        });
         });
       }
-    } else {
-      res.json({
+      sendResponse({
         success: true,
         message: 'Nenhuma transmissão ativa encontrada'
       });
     }
   } catch (error) {
     console.error('Erro ao parar transmissão:', error);
-    res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+    if (!responseSent) {
+      res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+    }
   }
 });
 
