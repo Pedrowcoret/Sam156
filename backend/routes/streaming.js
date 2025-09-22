@@ -791,13 +791,11 @@ router.post('/stop', authMiddleware, async (req, res) => {
           message: 'Transmissão de playlist finalizada com sucesso'
         });
       } else {
-      }
-      res.json({
-        success: true,
-        is_live: false,
+        sendResponse({
+          success: true,
           message: 'Nenhuma transmissão de playlist ativa encontrada'
-          }
-      )
+        });
+      }
 
     } else if (stream_type === 'obs') {
       // Parar transmissão OBS
@@ -817,16 +815,16 @@ router.post('/stop', authMiddleware, async (req, res) => {
 
         console.log(`✅ Transmissão OBS finalizada - ID: ${liveId}`);
         sendResponse({
-        res.json({
           success: true,
           message: 'Transmissão OBS finalizada com sucesso'
         });
-        sendResponse({
+      } else {
         sendResponse({
           success: true,
-        });
+          message: 'Nenhuma transmissão OBS ativa encontrada'
         });
       }
+    } else {
       sendResponse({
         success: true,
         message: 'Nenhuma transmissão ativa encontrada'
@@ -882,6 +880,46 @@ function formatDuration(seconds) {
     return `${s}s`;
   }
 }
+
+// Função para limpar transmissões inativas
+async function cleanupInactiveTransmissions(userId) {
+  try {
+    // Finalizar transmissões de playlist órfãs
+    const [playlistResult] = await db.execute(
+      'UPDATE transmissoes SET status = "finalizada", data_fim = NOW() WHERE codigo_stm = ? AND status = "ativa"',
+      [userId]
+    );
+    
+    // Finalizar lives órfãs
+    const [livesResult] = await db.execute(
+      'UPDATE lives SET status = "0", data_fim = NOW() WHERE codigo_stm = ? AND status = "1"',
+      [userId]
+    );
+    
+    const totalCleaned = (playlistResult.affectedRows || 0) + (livesResult.affectedRows || 0);
+    
+    if (totalCleaned > 0) {
+      console.log(`🧹 Limpeza automática: ${totalCleaned} transmissões inativas finalizadas para usuário ${userId}`);
+    }
+    
+    return { success: true, cleaned_count: totalCleaned };
+  } catch (error) {
+    console.error('Erro na limpeza de transmissões inativas:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// POST /api/streaming/cleanup-inactive - Limpar transmissões inativas
+router.post('/cleanup-inactive', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await cleanupInactiveTransmissions(userId);
+    res.json(result);
+  } catch (error) {
+    console.error('Erro na limpeza:', error);
+    res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+  }
+});
 
 // Cleanup ao fechar aplicação
 process.on('SIGINT', async () => {
